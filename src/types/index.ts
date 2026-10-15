@@ -84,6 +84,11 @@ export interface Activity {
   location?: string;
   /** Stable catalog reference when sourced from destination attractions. */
   catalogId?: string;
+  /**
+   * Demo area cluster copied from catalog when known.
+   * Older snapshots omit this — schedule warnings stay safe without it.
+   */
+  areaId?: string;
   /** Personal note — optional, migrated safely for older snapshots. */
   notes?: string;
   /** Present when known; older itineraries may omit (inferred by category). */
@@ -133,6 +138,11 @@ export interface Itinerary {
   budget: BudgetBreakdown;
   isDemoEstimate: true;
   generationNote: string;
+  /**
+   * Optional demo trade-off notes (pacing, area clustering, budget trim).
+   * Missing on older snapshots — treat as [].
+   */
+  constraintNotes?: string[];
 }
 
 export interface ItineraryGenerationRequest extends TripFormInput {

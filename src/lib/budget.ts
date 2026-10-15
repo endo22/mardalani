@@ -240,12 +240,92 @@ function minutesToTime(totalMinutes: number): string {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
-/** Suggest a start time after existing day activities (15m buffer), capped early evening. */
+/** Soft day packing caps by travel style (demo pacing — not live endurance models). */
+export interface StyleDayCaps {
+  maxHours: number;
+  maxActivities: number;
+  /** Soft target when filling thin days from leftover catalog. */
+  fillTarget: number;
+}
+
+export function getStyleDayCaps(style: TravelStyle): StyleDayCaps {
+  switch (style) {
+    case "relaxed":
+      return { maxHours: 6.5, maxActivities: 3, fillTarget: 2 };
+    case "luxury":
+      return { maxHours: 7, maxActivities: 3, fillTarget: 2 };
+    case "cultural":
+      return { maxHours: 8, maxActivities: 4, fillTarget: 3 };
+    case "adventure":
+      return { maxHours: 10, maxActivities: 5, fillTarget: 3 };
+    case "balanced":
+    default:
+      return { maxHours: 8.5, maxActivities: 4, fillTarget: 3 };
+  }
+}
+
+/**
+ * Demo affinity bonus for same / adjacent area clustering.
+ * Positive = prefer; mild negative = soft deprioritize distant clusters.
+ */
+export function areaAffinityScore(
+  candidateAreaId: string | undefined,
+  anchorAreaId: string | undefined,
+  adjacentAreaIds: readonly string[] = [],
+): number {
+  if (!candidateAreaId || !anchorAreaId) return 0;
+  if (candidateAreaId === anchorAreaId) return 5;
+  if (adjacentAreaIds.includes(candidateAreaId)) return 2;
+  return -3;
+}
+
+export type DemoTransferRelation = "same" | "adjacent" | "distant" | "unknown";
+
+export function demoTransferRelation(
+  fromAreaId: string | undefined,
+  toAreaId: string | undefined,
+  adjacentAreaIds: readonly string[] = [],
+): DemoTransferRelation {
+  if (!fromAreaId || !toAreaId) return "unknown";
+  if (fromAreaId === toAreaId) return "same";
+  if (adjacentAreaIds.includes(toAreaId)) return "adjacent";
+  return "distant";
+}
+
+/**
+ * Demo transfer buffer minutes between stops — estimates only, not live travel times.
+ * Scaled lightly by transport preference.
+ */
+export function demoTransferBufferMinutes(
+  relation: DemoTransferRelation,
+  transport: TransportPreference = "mixed",
+): number {
+  const base: Record<DemoTransferRelation, number> = {
+    same: 10,
+    adjacent: 30,
+    distant: 60,
+    unknown: 20,
+  };
+  const transportFactor: Record<TransportPreference, number> = {
+    walking: 1.35,
+    public: 1.2,
+    mixed: 1,
+    private: 0.85,
+  };
+  return Math.round(base[relation] * transportFactor[transport]);
+}
+
+/** Warn when demo transfer estimate is at least this many minutes. */
+export const LONG_TRANSFER_WARNING_MINUTES = 45;
+
+/** Suggest a start time after existing day activities (buffer minutes), capped early evening. */
 export function suggestNextStartTime(
   activities: Activity[],
   fallback = "09:00",
+  bufferMinutes = 15,
 ): string {
   if (activities.length === 0) return fallback;
+  const buffer = Math.max(0, bufferMinutes);
   let end = timeToMinutes(fallback) ?? 9 * 60;
   for (const activity of activities) {
     const start = timeToMinutes(activity.time);
@@ -255,19 +335,31 @@ export function suggestNextStartTime(
       : 0;
     end = Math.max(end, start + duration * 60);
   }
-  return minutesToTime(Math.min(end + 15, 20 * 60));
+  return minutesToTime(Math.min(end + buffer, 20 * 60));
 }
 
 export interface DayScheduleWarning {
-  type: "conflict" | "packed";
+  type: "conflict" | "packed" | "transfer";
   message: string;
+}
+
+export interface ScheduleWarningOptions {
+  /** Destination slug for adjacency lookup when activities carry areaId. */
+  destinationSlug?: string;
+  transport?: TransportPreference;
+  /** Optional adjacent-area resolver; defaults to none (same/distant only). */
+  getAdjacentAreas?: (areaId: string) => readonly string[];
 }
 
 /** Non-blocking schedule warnings for a single day. */
 export function getDayScheduleWarnings(
   activities: Activity[],
+  options: ScheduleWarningOptions = {},
 ): DayScheduleWarning[] {
   const warnings: DayScheduleWarning[] = [];
+  const transport = options.transport ?? "mixed";
+  const getAdjacent = options.getAdjacentAreas ?? ((): readonly string[] => []);
+
   const timed = activities
     .map((a) => {
       const start = timeToMinutes(a.time);
@@ -281,6 +373,7 @@ export function getDayScheduleWarnings(
         end: start + duration * 60,
         durationHours: duration,
         category: a.category,
+        areaId: a.areaId,
       };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null)
@@ -297,6 +390,26 @@ export function getDayScheduleWarnings(
         });
       }
     }
+  }
+
+  const movable = timed.filter(
+    (t) =>
+      t.category !== "accommodation" &&
+      t.category !== "transportation" &&
+      t.category !== "other",
+  );
+  for (let i = 0; i < movable.length - 1; i++) {
+    const from = movable[i]!;
+    const to = movable[i + 1]!;
+    const adjacent = from.areaId ? getAdjacent(from.areaId) : [];
+    const relation = demoTransferRelation(from.areaId, to.areaId, adjacent);
+    const buffer = demoTransferBufferMinutes(relation, transport);
+    if (buffer < LONG_TRANSFER_WARNING_MINUTES) continue;
+    if (relation === "same") continue;
+    warnings.push({
+      type: "transfer",
+      message: `Demo transfer estimate ~${buffer} min between “${from.name}” and “${to.name}” (${relation} area cluster, ${transport}) — illustrative only, not live travel time. Warning only; save is allowed.`,
+    });
   }
 
   const activeHours = timed

@@ -1,4 +1,6 @@
 import {
+  areAreasAdjacent,
+  getAdjacentAreas,
   getAttractionCatalog,
   hasAttractionCatalog,
   type Attraction,
@@ -12,10 +14,15 @@ import {
 } from "@/data/templates";
 import { getDestinationBySlug } from "@/data/destinations";
 import {
+  areaAffinityScore,
+  demoTransferBufferMinutes,
+  demoTransferRelation,
+  getStyleDayCaps,
   inferCostKind,
   recalculateBudget,
   scaleDemoCost,
   suggestNextStartTime,
+  type StyleDayCaps,
 } from "@/lib/budget";
 import { addDays, daysBetween } from "@/lib/format";
 import { createId } from "@/lib/utils";
@@ -31,11 +38,6 @@ import type {
   TravelStyle,
 } from "@/types";
 
-/** Soft cap on scheduled hours per day (excludes overnight accommodation block). */
-const MAX_DAY_HOURS = 10;
-/** Soft cap on non-logistics activities per day. */
-const MAX_DAY_ACTIVITIES = 5;
-
 const interestStyleHint: Partial<Record<TravelInterest, TravelStyle>> = {
   culture: "cultural",
   adventure: "adventure",
@@ -46,6 +48,8 @@ function attractionScore(
   item: Attraction,
   interests: TravelInterest[],
   style: TravelStyle,
+  anchorAreaId?: string,
+  destinationSlug?: string,
 ): number {
   let score = 0;
   if (interests.length > 0) {
@@ -59,7 +63,10 @@ function attractionScore(
     const hinted = interestStyleHint[interest];
     if (hinted && item.styles?.includes(hinted)) score += 1;
   }
-  // Stable tie-break via id length bias — final sort uses id string
+  if (destinationSlug && anchorAreaId) {
+    const adjacent = getAdjacentAreas(destinationSlug, anchorAreaId);
+    score += areaAffinityScore(item.areaId, anchorAreaId, adjacent);
+  }
   return score;
 }
 
@@ -105,6 +112,43 @@ function findCatalogMatch(
   return byName;
 }
 
+function dayAnchorAreaId(activities: Activity[]): string | undefined {
+  for (const a of activities) {
+    if (
+      a.areaId &&
+      (a.category === "activities" ||
+        a.category === "food" ||
+        a.category === "attractions")
+    ) {
+      return a.areaId;
+    }
+  }
+  return activities.find((a) => a.areaId)?.areaId;
+}
+
+function transferBufferForNext(
+  activities: Activity[],
+  nextAreaId: string | undefined,
+  destinationSlug: string,
+  transport: TransportPreference,
+): number {
+  const anchor = dayAnchorAreaId(activities);
+  const lastWithArea = [...activities]
+    .reverse()
+    .find(
+      (a) =>
+        a.areaId &&
+        a.category !== "accommodation" &&
+        a.category !== "transportation",
+    );
+  const fromArea = lastWithArea?.areaId ?? anchor;
+  const adjacent = fromArea
+    ? getAdjacentAreas(destinationSlug, fromArea)
+    : [];
+  const relation = demoTransferRelation(fromArea, nextAreaId, adjacent);
+  return Math.max(15, demoTransferBufferMinutes(relation, transport));
+}
+
 function toActivityFromAttraction(
   attraction: Attraction,
   destinationSlug: string,
@@ -134,6 +178,7 @@ function toActivityFromAttraction(
     category: attraction.category,
     description: attraction.description,
     location: attraction.location,
+    areaId: attraction.areaId,
     costKind,
   };
 }
@@ -181,19 +226,22 @@ function dayActiveHours(activities: Activity[]): number {
     .reduce((sum, a) => sum + a.durationHours, 0);
 }
 
-function trimPackedDay(activities: Activity[]): Activity[] {
+function trimPackedDay(
+  activities: Activity[],
+  caps: StyleDayCaps,
+): { activities: Activity[]; droppedForPacing: number } {
   let next = [...activities].sort((a, b) => a.time.localeCompare(b.time));
+  let droppedForPacing = 0;
   const isLogistics = (a: Activity) =>
     a.category === "transportation" ||
     a.category === "accommodation" ||
     a.category === "other";
 
   while (
-    (dayActiveHours(next) > MAX_DAY_HOURS ||
-      next.filter((a) => !isLogistics(a)).length > MAX_DAY_ACTIVITIES) &&
+    (dayActiveHours(next) > caps.maxHours ||
+      next.filter((a) => !isLogistics(a)).length > caps.maxActivities) &&
     next.length > 2
   ) {
-    // Drop lowest-priority optional: free/low-cost activities last in day first
     const candidates = next
       .map((a, index) => ({ a, index }))
       .filter(({ a }) => !isLogistics(a))
@@ -204,44 +252,85 @@ function trimPackedDay(activities: Activity[]): Activity[] {
     const drop = candidates[0];
     if (!drop) break;
     next = next.filter((_, i) => i !== drop.index);
+    droppedForPacing += 1;
   }
-  return next;
+  return { activities: next, droppedForPacing };
+}
+
+function pickPreferredScored(
+  scored: { item: Attraction; score: number; id: string }[],
+  index: number,
+): typeof scored {
+  return scored.filter(
+    (s) =>
+      !s.item.preferredDay ||
+      s.item.preferredDay === ((index % 3) + 1) ||
+      Math.abs((s.item.preferredDay ?? 1) - ((index % 3) + 1)) <= 1,
+  );
+}
+
+function rescoreWithAnchor(
+  catalog: Attraction[],
+  interests: TravelInterest[],
+  style: TravelStyle,
+  destinationSlug: string,
+  anchorAreaId: string | undefined,
+): { item: Attraction; score: number; id: string }[] {
+  return catalog
+    .map((item) => ({
+      item,
+      score: attractionScore(
+        item,
+        interests,
+        style,
+        anchorAreaId,
+        destinationSlug,
+      ),
+      id: item.id,
+    }))
+    .sort(compareByScoreThenId);
 }
 
 function buildSmartDaysFromCatalog(
   request: ItineraryGenerationRequest,
   templates: DayTemplate[],
-): { days: ItineraryDay[]; limitation: string | null } {
+): {
+  days: ItineraryDay[];
+  limitation: string | null;
+  constraintNotes: string[];
+} {
   const catalog = getAttractionCatalog(request.destinationSlug);
   const interests = request.interests ?? [];
   const usedCatalogIds = new Set<string>();
   const dayCount = templates.length;
+  const caps = getStyleDayCaps(request.travelStyle);
+  const constraintNotes: string[] = [];
   let limitation: string | null = null;
+  let pacingDrops = 0;
+  let areaTradeOff = false;
+  let usedAreaAffinity = false;
 
   if (catalog.length < 4) {
     limitation =
       "Attraction catalog for this destination is limited — adjust days manually from the catalog or add custom activities.";
   }
 
-  const scored = catalog
-    .map((item) => ({
-      item,
-      score: attractionScore(item, interests, request.travelStyle),
-      id: item.id,
-    }))
-    .sort(compareByScoreThenId);
+  const baseScored = rescoreWithAnchor(
+    catalog,
+    interests,
+    request.travelStyle,
+    request.destinationSlug,
+    undefined,
+  );
 
   let skippedCatalogSlots = 0;
   let missingLodging = false;
 
   const days: ItineraryDay[] = templates.map((tmpl, index) => {
     const dayNumber = index + 1;
-    const preferred = scored.filter(
-      (s) =>
-        !s.item.preferredDay ||
-        s.item.preferredDay === ((index % 3) + 1) ||
-        Math.abs((s.item.preferredDay ?? 1) - ((index % 3) + 1)) <= 1,
-    );
+    let anchorAreaId: string | undefined;
+    let scored = baseScored;
+    let preferred = pickPreferredScored(scored, index);
 
     const slotTemplates = filterTemplateActivities(
       tmpl.activities,
@@ -250,22 +339,44 @@ function buildSmartDaysFromCatalog(
 
     const activities: Activity[] = [];
 
+    const refreshScores = () => {
+      if (!anchorAreaId) {
+        anchorAreaId = dayAnchorAreaId(activities);
+        if (anchorAreaId) {
+          usedAreaAffinity = true;
+          scored = rescoreWithAnchor(
+            catalog,
+            interests,
+            request.travelStyle,
+            request.destinationSlug,
+            anchorAreaId,
+          );
+          preferred = pickPreferredScored(scored, index);
+        }
+      }
+    };
+
     for (let slot = 0; slot < slotTemplates.length; slot++) {
       const slotTmpl = slotTemplates[slot]!;
       const matched = findCatalogMatch(catalog, slotTmpl);
 
       let chosen: Attraction | undefined = matched;
 
-      // Prefer a higher-scoring unused catalog item of same category when interests set
       if (interests.length > 0 && slotTmpl.category === "activities") {
+        const matchedScore = matched
+          ? attractionScore(
+              matched,
+              interests,
+              request.travelStyle,
+              anchorAreaId,
+              request.destinationSlug,
+            )
+          : -999;
         const alt = preferred.find(
           (s) =>
             s.item.category === "activities" &&
             !usedCatalogIds.has(s.item.id) &&
-            s.score >
-              (matched
-                ? attractionScore(matched, interests, request.travelStyle)
-                : -999),
+            s.score > matchedScore,
         );
         if (alt) chosen = alt.item;
       }
@@ -279,7 +390,6 @@ function buildSmartDaysFromCatalog(
         chosen = replacement?.item;
       }
 
-      // Catalog-only path: never invent template attractions / prices.
       if (!chosen) {
         const sameCategory = preferred.find(
           (s) =>
@@ -289,7 +399,47 @@ function buildSmartDaysFromCatalog(
         chosen = sameCategory?.item;
       }
 
+      // Prefer same/adjacent unused candidate of same category when available
+      if (chosen && anchorAreaId) {
+        const current = chosen;
+        const betterLocal = preferred.find(
+          (s) =>
+            s.item.category === current.category &&
+            !usedCatalogIds.has(s.item.id) &&
+            s.item.areaId &&
+            (s.item.areaId === anchorAreaId ||
+              areAreasAdjacent(
+                request.destinationSlug,
+                anchorAreaId,
+                s.item.areaId,
+              )) &&
+            s.score >=
+              attractionScore(
+                current,
+                interests,
+                request.travelStyle,
+                anchorAreaId,
+                request.destinationSlug,
+              ),
+        );
+        if (betterLocal) chosen = betterLocal.item;
+      }
+
       if (chosen) {
+        if (
+          interests.length > 0 &&
+          anchorAreaId &&
+          chosen.areaId &&
+          chosen.areaId !== anchorAreaId &&
+          !areAreasAdjacent(
+            request.destinationSlug,
+            anchorAreaId,
+            chosen.areaId,
+          ) &&
+          chosen.interests.some((i) => interests.includes(i))
+        ) {
+          areaTradeOff = true;
+        }
         usedCatalogIds.add(chosen.id);
         activities.push(
           toActivityFromAttraction(
@@ -303,16 +453,17 @@ function buildSmartDaysFromCatalog(
             slotTmpl.time,
           ),
         );
+        refreshScores();
       } else {
         skippedCatalogSlots += 1;
       }
     }
 
-    // Fill thin days from leftover high-scoring attractions, sequenced by duration
     const nonLogistics = activities.filter(
       (a) => a.category === "activities" || a.category === "food",
     );
-    if (nonLogistics.length < 2) {
+    if (nonLogistics.length < caps.fillTarget) {
+      refreshScores();
       for (const s of preferred) {
         if (usedCatalogIds.has(s.item.id)) continue;
         if (
@@ -321,9 +472,25 @@ function buildSmartDaysFromCatalog(
         ) {
           continue;
         }
-        if (dayActiveHours(activities) + s.item.durationHours > MAX_DAY_HOURS) {
+        if (
+          dayActiveHours(activities) + s.item.durationHours >
+          caps.maxHours
+        ) {
           continue;
         }
+        if (
+          activities.filter(
+            (a) => a.category === "activities" || a.category === "food",
+          ).length >= caps.maxActivities
+        ) {
+          break;
+        }
+        const buffer = transferBufferForNext(
+          activities,
+          s.item.areaId,
+          request.destinationSlug,
+          request.transport,
+        );
         usedCatalogIds.add(s.item.id);
         activities.push(
           toActivityFromAttraction(
@@ -334,20 +501,24 @@ function buildSmartDaysFromCatalog(
             request.budgetTier,
             request.transport,
             request.travelers,
-            suggestNextStartTime(activities, s.item.defaultTime ?? "09:00"),
+            suggestNextStartTime(
+              activities,
+              s.item.defaultTime ?? "09:00",
+              buffer,
+            ),
           ),
         );
+        refreshScores();
         if (
           activities.filter(
             (a) => a.category === "activities" || a.category === "food",
-          ).length >= 3
+          ).length >= caps.fillTarget
         ) {
           break;
         }
       }
     }
 
-    // Lodging: reuse catalog accommodation across nights — do not invent stays.
     const hasStay = activities.some((a) => a.category === "accommodation");
     if (!hasStay && index < dayCount - 1) {
       const stay =
@@ -371,15 +542,16 @@ function buildSmartDaysFromCatalog(
       }
     }
 
-    const trimmed = trimPackedDay(activities);
-    trimmed.sort((a, b) => a.time.localeCompare(b.time));
+    const trimmed = trimPackedDay(activities, caps);
+    pacingDrops += trimmed.droppedForPacing;
+    trimmed.activities.sort((a, b) => a.time.localeCompare(b.time));
 
     return {
       dayNumber,
       date: addDays(request.startDate, index),
       title: tmpl.title,
       summary: tmpl.summary,
-      activities: trimmed,
+      activities: trimmed.activities,
     };
   });
 
@@ -389,7 +561,6 @@ function buildSmartDaysFromCatalog(
       "Some day slots could not be filled from the destination catalog alone — adjust manually from the catalog or add custom activities.";
   }
 
-  // Clean extended-day titles when cycling templates
   const sourceLen =
     destinationTemplates[request.destinationSlug]?.length ||
     fallbackDaySeed.length;
@@ -401,7 +572,32 @@ function buildSmartDaysFromCatalog(
     };
   });
 
-  // Soft budget trim: if over cap, drop lowest-score optional activities
+  if (usedAreaAffinity) {
+    constraintNotes.push(
+      "Demo area clustering: preferred same or adjacent area stops when the catalog allowed — not live routing or maps.",
+    );
+  }
+  if (areaTradeOff) {
+    constraintNotes.push(
+      "Demo trade-off: some interest-matched stops sit outside the day’s area cluster.",
+    );
+  }
+  if (pacingDrops > 0) {
+    constraintNotes.push(
+      `Demo pacing (${request.travelStyle}): soft-capped day length/activity count — illustrative only, not a fitness model.`,
+    );
+  } else if (
+    request.travelStyle === "relaxed" ||
+    request.travelStyle === "adventure"
+  ) {
+    constraintNotes.push(
+      `Demo pacing (${request.travelStyle}): day fill targets follow style soft caps — estimates only.`,
+    );
+  }
+  constraintNotes.push(
+    `Demo transfer buffers use transport preference “${request.transport}” — not live travel times, traffic, or opening hours.`,
+  );
+
   const budgetOpts = { travelers: request.travelers };
   const budget = recalculateBudget(
     cleaned,
@@ -410,13 +606,14 @@ function buildSmartDaysFromCatalog(
   );
   if (budget.overBudget) {
     const catalogIdsByScore = new Map(
-      scored.map((s) => [s.item.id, s.score] as const),
+      baseScored.map((s) => [s.item.id, s.score] as const),
     );
     let working = cleaned.map((d) => ({
       ...d,
       activities: [...d.activities],
     }));
     let guard = 0;
+    let trimmedForBudget = false;
     while (
       recalculateBudget(working, request.budgetAmount, budgetOpts)
         .overBudget &&
@@ -446,6 +643,7 @@ function buildSmartDaysFromCatalog(
         });
       const target = droppable[0];
       if (!target) break;
+      trimmedForBudget = true;
       working = working.map((d) =>
         d.dayNumber === target.dayNumber
           ? {
@@ -457,10 +655,15 @@ function buildSmartDaysFromCatalog(
           : d,
       );
     }
-    return { days: working, limitation };
+    if (trimmedForBudget) {
+      constraintNotes.push(
+        "Budget trim: dropped lower-priority catalog activities to approach the demo budget cap — estimates only.",
+      );
+    }
+    return { days: working, limitation, constraintNotes };
   }
 
-  return { days: cleaned, limitation };
+  return { days: cleaned, limitation, constraintNotes };
 }
 
 function buildFallbackDays(request: ItineraryGenerationRequest): {
@@ -472,6 +675,7 @@ function buildFallbackDays(request: ItineraryGenerationRequest): {
     request.destinationSlug,
     dayCount,
   );
+  const caps = getStyleDayCaps(request.travelStyle);
 
   const days: ItineraryDay[] = templates.map((tmpl, index) => {
     const dayNumber = index + 1;
@@ -523,7 +727,7 @@ function buildFallbackDays(request: ItineraryGenerationRequest): {
       date: addDays(request.startDate, index),
       title: tmpl.title,
       summary: tmpl.summary,
-      activities: trimPackedDay(activities),
+      activities: trimPackedDay(activities, caps).activities,
     };
   });
 
@@ -546,6 +750,7 @@ function buildDays(request: ItineraryGenerationRequest): {
   usedFallback: boolean;
   limitation: string | null;
   usedCatalog: boolean;
+  constraintNotes: string[];
 } {
   const dayCount = daysBetween(request.startDate, request.endDate);
   const { templates, usedFallback } = pickDayTemplates(
@@ -554,12 +759,16 @@ function buildDays(request: ItineraryGenerationRequest): {
   );
 
   if (hasAttractionCatalog(request.destinationSlug) && !usedFallback) {
-    const { days, limitation } = buildSmartDaysFromCatalog(request, templates);
+    const { days, limitation, constraintNotes } = buildSmartDaysFromCatalog(
+      request,
+      templates,
+    );
     return {
       days,
       usedFallback: false,
       limitation,
       usedCatalog: true,
+      constraintNotes,
     };
   }
 
@@ -571,6 +780,9 @@ function buildDays(request: ItineraryGenerationRequest): {
       ? `Preview scaffold for this destination — not a verified full itinerary. Destination-specific attraction catalog is not available yet; days and costs are illustrative fallbacks only. You can still adjust manually.`
       : null,
     usedCatalog: false,
+    constraintNotes: [
+      "Preview scaffold: destination catalog unavailable — area clustering and transfer buffers were not applied.",
+    ],
   };
 }
 
@@ -586,7 +798,8 @@ export class MockItineraryGenerationService
       throw new Error("Unknown destination");
     }
 
-    const { days, usedFallback, limitation, usedCatalog } = buildDays(request);
+    const { days, usedFallback, limitation, usedCatalog, constraintNotes } =
+      buildDays(request);
     const now = new Date().toISOString();
     const budget = recalculateBudget(days, request.budgetAmount, {
       travelers: request.travelers,
@@ -599,8 +812,10 @@ export class MockItineraryGenerationService
         : "";
 
     const catalogNote = usedCatalog
-      ? " Built from the destination attraction catalog with demo duration and cost estimates. Travel times between stops are not modeled — routes are not geographically optimized."
+      ? " Built from the destination attraction catalog with demo duration, cost, and transfer-buffer estimates. Area clustering prefers same/adjacent stops when possible — not geographically optimized live routes."
       : "";
+
+    const pacingNote = ` Travel style “${request.travelStyle}” applies demo soft caps on day length.`;
 
     let generationNote: string;
     if (usedFallback) {
@@ -610,9 +825,9 @@ export class MockItineraryGenerationService
       generationNote +=
         " Adjust days manually from the catalog or custom activities.";
     } else if (limitation) {
-      generationNote = `Demo itinerary for ${destination.name}. All costs and schedules are illustrative estimates — not live bookings or quotes.${catalogNote}${interestNote} ${limitation}`;
+      generationNote = `Demo itinerary for ${destination.name}. All costs, schedules, and transfer buffers are illustrative estimates — not live bookings, quotes, maps, or traffic.${catalogNote}${pacingNote}${interestNote} ${limitation}`;
     } else {
-      generationNote = `Demo itinerary for ${destination.name}. All costs and schedules are illustrative estimates — not live bookings or quotes.${catalogNote}${interestNote}`;
+      generationNote = `Demo itinerary for ${destination.name}. All costs, schedules, and transfer buffers are illustrative estimates — not live bookings, quotes, maps, or traffic.${catalogNote}${pacingNote}${interestNote}`;
     }
 
     return {
@@ -634,6 +849,7 @@ export class MockItineraryGenerationService
       budget,
       isDemoEstimate: true,
       generationNote,
+      constraintNotes: constraintNotes.slice(0, 8),
     };
   }
 }

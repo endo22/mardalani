@@ -66,6 +66,8 @@ async function generatePlan(
     travelers?: string;
     budgetAmount?: string;
     interests?: string[];
+    travelStyle?: string;
+    transport?: string;
   },
 ) {
   // Prefill destination via search params (stable under React remounts).
@@ -76,6 +78,12 @@ async function generatePlan(
   await page.locator("#travelers").fill(opts.travelers ?? "2");
   if (opts.budgetAmount) {
     await page.locator("#budgetAmount").fill(opts.budgetAmount);
+  }
+  if (opts.travelStyle) {
+    await page.locator("#travelStyle").selectOption(opts.travelStyle);
+  }
+  if (opts.transport) {
+    await page.locator("#transport").selectOption(opts.transport);
   }
   if (opts.interests?.length) {
     for (const interest of opts.interests) {
@@ -1377,5 +1385,249 @@ test.describe("MARDALANI browser QA", () => {
     await expect(page.locator("#mobile-nav")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(page.locator("#mobile-nav")).toHaveCount(0);
+  });
+
+  test("34. Phase-8 Bali constraint notes or same-area tendency", async ({
+    page,
+  }) => {
+    await generatePlan(page, {
+      destination: "bali",
+      travelStyle: "balanced",
+      startDate: "2036-03-01",
+      endDate: "2036-03-03",
+    });
+    await expect(page.getByRole("heading", { name: "Bali", exact: true })).toBeVisible();
+
+    const constraint = page.getByTestId("constraint-notes");
+    const hasConstraintNotes = (await constraint.count()) > 0;
+    if (hasConstraintNotes) {
+      await expect(constraint).toContainText(
+        /area clustering|transfer buffer|pacing|Demo/i,
+      );
+    }
+
+    // Soft assert: generation note mentions demo transfer / style soft caps
+    const note = await page
+      .locator("p")
+      .filter({ hasText: /Demo itinerary for Bali/i })
+      .first()
+      .innerText();
+    expect(note.toLowerCase()).toMatch(
+      /transfer|soft cap|area clustering|attraction catalog/,
+    );
+
+    // Soft same-area tendency: among catalog activities, majority share a
+    // dominant areaId when present (demo clustering, not hard geography).
+    const areaStats = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      if (!raw) return { withArea: 0, dominantShare: 0 };
+      const data = JSON.parse(raw) as {
+        days: {
+          activities: { areaId?: string; category: string }[];
+        }[];
+      };
+      const counts = new Map<string, number>();
+      let withArea = 0;
+      for (const day of data.days) {
+        for (const a of day.activities) {
+          if (
+            a.category !== "activities" &&
+            a.category !== "food" &&
+            a.category !== "attractions"
+          ) {
+            continue;
+          }
+          if (!a.areaId) continue;
+          withArea += 1;
+          counts.set(a.areaId, (counts.get(a.areaId) ?? 0) + 1);
+        }
+      }
+      const max = Math.max(0, ...counts.values());
+      return {
+        withArea,
+        dominantShare: withArea > 0 ? max / withArea : 0,
+      };
+    }, STORAGE_KEY);
+
+    expect(areaStats.withArea).toBeGreaterThan(0);
+    // Soft: at least ~40% of area-tagged stops share the dominant cluster
+    // OR constraint notes explain clustering (either signal is enough).
+    expect(
+      areaStats.dominantShare >= 0.4 || hasConstraintNotes,
+      `expected same-area tendency or constraint notes (share=${areaStats.dominantShare})`,
+    ).toBe(true);
+  });
+
+  test("35. Phase-8 relaxed vs adventure day density (soft)", async ({
+    page,
+  }) => {
+    await generatePlan(page, {
+      destination: "bali",
+      travelStyle: "relaxed",
+      startDate: "2036-04-01",
+      endDate: "2036-04-03",
+      budgetAmount: "50000000",
+    });
+    const relaxedCounts = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      if (!raw) return [] as number[];
+      const data = JSON.parse(raw) as {
+        days: { activities: { category: string }[] }[];
+      };
+      return data.days.map(
+        (d) =>
+          d.activities.filter(
+            (a) =>
+              a.category === "activities" ||
+              a.category === "food" ||
+              a.category === "attractions",
+          ).length,
+      );
+    }, STORAGE_KEY);
+
+    await generatePlan(page, {
+      destination: "bali",
+      travelStyle: "adventure",
+      startDate: "2036-04-10",
+      endDate: "2036-04-12",
+      budgetAmount: "50000000",
+    });
+    const adventureCounts = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      if (!raw) return [] as number[];
+      const data = JSON.parse(raw) as {
+        days: { activities: { category: string }[] }[];
+      };
+      return data.days.map(
+        (d) =>
+          d.activities.filter(
+            (a) =>
+              a.category === "activities" ||
+              a.category === "food" ||
+              a.category === "attractions",
+          ).length,
+      );
+    }, STORAGE_KEY);
+
+    const relaxedMax = Math.max(0, ...relaxedCounts);
+    const adventureMax = Math.max(0, ...adventureCounts);
+    // Soft: adventure should not be thinner than relaxed on peak day
+    expect(adventureMax).toBeGreaterThanOrEqual(relaxedMax);
+    // Soft: relaxed peak stays within relaxed soft-cap ballpark
+    expect(relaxedMax).toBeLessThanOrEqual(4);
+
+    await expect(page.getByTestId("constraint-notes")).toContainText(
+      /pacing|transfer|area/i,
+    );
+  });
+
+  test("36. Phase-8 old snapshot without areaId still loads", async ({
+    page,
+  }) => {
+    await page.goto("/itinerary");
+    await page.evaluate((key) => {
+      const legacy = {
+        id: "trip_legacy_phase8",
+        createdAt: "2030-01-01T00:00:00.000Z",
+        updatedAt: "2030-01-01T00:00:00.000Z",
+        destinationSlug: "bali",
+        destinationName: "Bali",
+        startDate: "2036-05-01",
+        endDate: "2036-05-02",
+        travelers: 2,
+        travelStyle: "balanced",
+        budgetTier: "moderate",
+        transport: "mixed",
+        interests: [],
+        days: [
+          {
+            dayNumber: 1,
+            date: "2036-05-01",
+            title: "Legacy day",
+            summary: "Pre-areaId snapshot",
+            activities: [
+              {
+                id: "act_legacy_1",
+                name: "Legacy walk",
+                time: "10:00",
+                durationHours: 2,
+                costIdr: 50_000,
+                category: "activities",
+                description: "No areaId field",
+              },
+            ],
+          },
+        ],
+        manualExpenses: [],
+        budget: {
+          transportation: 0,
+          accommodation: 0,
+          food: 0,
+          attractions: 0,
+          activities: 50_000,
+          other: 0,
+          total: 50_000,
+          budgetCap: 5_000_000,
+          remaining: 4_950_000,
+          overBudget: false,
+        },
+        isDemoEstimate: true,
+        generationNote: "Demo itinerary for Bali (legacy snapshot).",
+      };
+      sessionStorage.setItem(key, JSON.stringify(legacy));
+    }, STORAGE_KEY);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Bali", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Legacy walk" })).toBeVisible();
+    // Optional constraintNotes absent — panel may be hidden
+    await expect(page.getByTestId("constraint-notes")).toHaveCount(0);
+  });
+
+  test("37. Phase-8 conflict warnings stay non-blocking with transfer types", async ({
+    page,
+  }) => {
+    await generatePlan(page, {
+      destination: "bandung",
+      startDate: "2036-06-01",
+      endDate: "2036-06-02",
+    });
+
+    await page.getByRole("button", { name: /Add custom activity/i }).click();
+    await page.locator("#act-name").fill("Phase8 Overlap A");
+    await page.locator("#act-time").fill("10:00");
+    await page.locator("#act-duration").fill("3");
+    await page.locator("#act-cost").fill("10000");
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: /^Add activity$/i })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Phase8 Overlap A" }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: /Add custom activity/i }).click();
+    await page.locator("#act-name").fill("Phase8 Overlap B");
+    await page.locator("#act-time").fill("11:00");
+    await page.locator("#act-duration").fill("2");
+    await page.locator("#act-cost").fill("10000");
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: /^Add activity$/i })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Phase8 Overlap B" }),
+    ).toBeVisible();
+
+    await expect(page.getByTestId("schedule-warnings")).toContainText(
+      /Time overlap|packed/i,
+    );
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Phase8 Overlap A" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Phase8 Overlap B" }),
+    ).toBeVisible();
   });
 });

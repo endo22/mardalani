@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  areaAffinityScore,
   categorySharePercent,
+  demoTransferBufferMinutes,
+  demoTransferRelation,
   estimatedCostPerPerson,
+  getDayScheduleWarnings,
   getOptimizationSuggestions,
+  getStyleDayCaps,
+  LONG_TRANSFER_WARNING_MINUTES,
   manualExpenseTripCost,
   recalculateBudget,
   scaleDemoCost,
   sumByCategory,
   validateManualExpenseDraft,
 } from "./budget";
-import type { ItineraryDay, ManualExpense } from "../types";
+import type { Activity, ItineraryDay, ManualExpense } from "../types";
 
 const emptyDays: ItineraryDay[] = [
   {
@@ -240,5 +246,101 @@ describe("budget calculation rules", () => {
       "shared",
     );
     assert.equal(sharedOne, sharedFour);
+  });
+});
+
+describe("Phase 8 travel intelligence helpers", () => {
+  it("scores same and adjacent areas higher than distant", () => {
+    assert.equal(areaAffinityScore("ubud", "ubud", ["canggu"]), 5);
+    assert.equal(areaAffinityScore("canggu", "ubud", ["canggu"]), 2);
+    assert.equal(areaAffinityScore("south", "ubud", ["canggu"]), -3);
+    assert.equal(areaAffinityScore(undefined, "ubud", []), 0);
+    assert.equal(areaAffinityScore("ubud", undefined, []), 0);
+  });
+
+  it("soft-caps relaxed days shorter than adventure", () => {
+    const relaxed = getStyleDayCaps("relaxed");
+    const adventure = getStyleDayCaps("adventure");
+    const balanced = getStyleDayCaps("balanced");
+    assert.ok(relaxed.maxHours < adventure.maxHours);
+    assert.ok(relaxed.maxActivities < adventure.maxActivities);
+    assert.equal(adventure.maxHours, 10);
+    assert.ok(balanced.maxHours >= relaxed.maxHours);
+    assert.ok(balanced.maxHours <= adventure.maxHours);
+  });
+
+  it("demo transfer buffers scale by relation and transport", () => {
+    assert.equal(demoTransferRelation("ubud", "ubud", []), "same");
+    assert.equal(
+      demoTransferRelation("ubud", "canggu", ["canggu"]),
+      "adjacent",
+    );
+    assert.equal(demoTransferRelation("ubud", "south", ["canggu"]), "distant");
+    assert.equal(demoTransferRelation(undefined, "ubud", []), "unknown");
+
+    const distantPrivate = demoTransferBufferMinutes("distant", "private");
+    const distantWalking = demoTransferBufferMinutes("distant", "walking");
+    assert.ok(distantWalking > distantPrivate);
+    assert.ok(distantPrivate >= LONG_TRANSFER_WARNING_MINUTES);
+    assert.ok(demoTransferBufferMinutes("same", "mixed") < LONG_TRANSFER_WARNING_MINUTES);
+  });
+
+  it("emits non-blocking long-transfer demo warnings", () => {
+    const activities: Activity[] = [
+      {
+        id: "a1",
+        name: "Tegallalang walk",
+        time: "09:00",
+        durationHours: 2,
+        costIdr: 0,
+        category: "activities",
+        description: "",
+        areaId: "ubud",
+      },
+      {
+        id: "a2",
+        name: "Uluwatu temple",
+        time: "14:00",
+        durationHours: 2,
+        costIdr: 100_000,
+        category: "activities",
+        description: "",
+        areaId: "south",
+      },
+    ];
+    const warnings = getDayScheduleWarnings(activities, {
+      transport: "public",
+      getAdjacentAreas: () => ["canggu"],
+    });
+    const transfer = warnings.filter((w) => w.type === "transfer");
+    assert.ok(transfer.length >= 1);
+    assert.match(transfer[0]!.message, /Demo transfer estimate/i);
+    assert.match(transfer[0]!.message, /not live travel time/i);
+    assert.equal(warnings.some((w) => w.type === "conflict"), false);
+  });
+
+  it("keeps conflict warnings when times overlap", () => {
+    const activities: Activity[] = [
+      {
+        id: "a1",
+        name: "Overlap A",
+        time: "10:00",
+        durationHours: 3,
+        costIdr: 0,
+        category: "activities",
+        description: "",
+      },
+      {
+        id: "a2",
+        name: "Overlap B",
+        time: "11:00",
+        durationHours: 2,
+        costIdr: 0,
+        category: "activities",
+        description: "",
+      },
+    ];
+    const warnings = getDayScheduleWarnings(activities);
+    assert.ok(warnings.some((w) => w.type === "conflict"));
   });
 });

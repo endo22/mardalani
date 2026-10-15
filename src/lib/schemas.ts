@@ -119,6 +119,8 @@ export const activitySchema = z.object({
   description: z.string().max(500),
   location: z.string().max(120).optional(),
   catalogId: z.string().max(80).optional(),
+  /** Missing on older snapshots — demo area clustering only. */
+  areaId: z.string().max(80).optional(),
   notes: z.string().max(300).optional(),
   costKind: activityCostKindSchema.optional(),
 });
@@ -167,6 +169,8 @@ export const itinerarySchema = z.object({
   budget: budgetBreakdownSchema,
   isDemoEstimate: z.literal(true),
   generationNote: z.string(),
+  /** Missing on older snapshots → UI treats as no extra notes. */
+  constraintNotes: z.array(z.string().max(300)).max(12).optional(),
 });
 
 export const planQuerySchema = z.object({

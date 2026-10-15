@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  getAdjacentAreas,
   getAttractionCatalog,
   type Attraction,
 } from "@/data/attractions";
@@ -136,10 +137,15 @@ export function ItineraryWorkspace() {
       transport: itinerary.transport,
     });
   }, [itinerary]);
-  const scheduleWarnings = useMemo(
-    () => (day ? getDayScheduleWarnings(day.activities) : []),
-    [day],
-  );
+  const scheduleWarnings = useMemo(() => {
+    if (!day || !itinerary) return [];
+    const slug = itinerary.destinationSlug;
+    return getDayScheduleWarnings(day.activities, {
+      destinationSlug: slug,
+      transport: itinerary.transport,
+      getAdjacentAreas: (areaId) => getAdjacentAreas(slug, areaId),
+    });
+  }, [day, itinerary]);
   const isScaffold =
     Boolean(itinerary?.generationNote?.toLowerCase().includes("scaffold"));
   const perPerson = itinerary
@@ -239,6 +245,7 @@ export function ItineraryWorkspace() {
       category: attraction.category,
       description: attraction.description,
       location: attraction.location,
+      areaId: attraction.areaId,
       costKind,
     };
     const days = addActivityToDays(itinerary.days, day.dayNumber, activity);
@@ -302,6 +309,7 @@ export function ItineraryWorkspace() {
       category: attraction.category,
       description: attraction.description,
       location: attraction.location,
+      areaId: attraction.areaId,
       costKind,
     };
     const days = updateActivityInDays(
@@ -433,6 +441,24 @@ export function ItineraryWorkspace() {
           not a verified full template for this destination. Adjust manually if
           needed.
         </p>
+      ) : null}
+
+      {(itinerary.constraintNotes?.length ?? 0) > 0 ? (
+        <div
+          className="mt-4 rounded-[var(--radius-md)] border border-forest/10 bg-white px-4 py-3 shadow-[var(--shadow-soft)]"
+          data-testid="constraint-notes"
+          role="region"
+          aria-label="How this plan was built"
+        >
+          <p className="text-caption font-semibold uppercase tracking-[0.14em] text-deep-green">
+            How this plan was built
+          </p>
+          <ul className="mt-2 space-y-1.5 text-body-sm text-muted">
+            {itinerary.constraintNotes!.map((note) => (
+              <li key={note}>· {note}</li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_22rem]">

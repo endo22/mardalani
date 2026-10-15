@@ -7,6 +7,11 @@ export interface Attraction {
   name: string;
   description: string;
   location?: string;
+  /**
+   * Optional static area cluster within a destination (demo geography only).
+   * Used for same/adjacent-day affinity and demo transfer buffers — not lat/lng.
+   */
+  areaId?: string;
   category: ActivityCategory;
   /** Demo visit duration estimate (hours). */
   durationHours: number;
@@ -19,6 +24,269 @@ export interface Attraction {
   defaultTime?: string;
   /** Soft day preference 1–3; used when distributing across trip length. */
   preferredDay?: number;
+}
+
+/**
+ * Adjacent area clusters per destination (demo only — not real road graphs).
+ * Keys are areaIds; values are neighboring areaIds.
+ */
+export const destinationAreaAdjacency: Record<
+  string,
+  Record<string, readonly string[]>
+> = {
+  bali: {
+    ubud: ["tampaksiring", "canggu"],
+    tampaksiring: ["ubud"],
+    canggu: ["ubud", "south"],
+    south: ["canggu"],
+  },
+  yogyakarta: {
+    city: ["borobudur", "prambanan"],
+    borobudur: ["city"],
+    prambanan: ["city"],
+  },
+  "danau-toba": {
+    parapat: ["tuktuk"],
+    tuktuk: ["parapat", "samosir-east", "samosir-west"],
+    "samosir-east": ["tuktuk", "samosir-west"],
+    "samosir-west": ["tuktuk", "samosir-east", "holbung"],
+    holbung: ["samosir-west"],
+  },
+  bandung: {
+    city: ["lembang"],
+    lembang: ["city", "ciwidey"],
+    ciwidey: ["lembang"],
+  },
+  lombok: {
+    south: ["kuta-belt", "gili"],
+    "kuta-belt": ["south"],
+    gili: ["south"],
+  },
+  "labuan-bajo": {
+    town: ["islands"],
+    islands: ["town"],
+  },
+  "raja-ampat": {
+    base: ["piaynemo", "arborek"],
+    piaynemo: ["base", "arborek"],
+    arborek: ["base", "piaynemo"],
+  },
+  jakarta: {
+    center: ["kota", "south", "ancol"],
+    kota: ["center"],
+    south: ["center"],
+    ancol: ["center"],
+  },
+};
+
+/** Map free-text `location` → areaId for major destinations. */
+const locationToAreaId: Record<string, Record<string, string>> = {
+  bali: {
+    Tegallalang: "ubud",
+    Uluwatu: "south",
+    Canggu: "canggu",
+  },
+  yogyakarta: {
+    Borobudur: "borobudur",
+    Prambanan: "prambanan",
+  },
+  "danau-toba": {
+    Parapat: "parapat",
+    "Tuk Tuk": "tuktuk",
+    Ambarita: "samosir-east",
+    Simanindo: "samosir-west",
+    Pangururan: "samosir-west",
+    "Bukit Holbung": "holbung",
+    Tomok: "samosir-east",
+  },
+  bandung: {
+    "Tangkuban Perahu": "lembang",
+    Ciwidey: "ciwidey",
+  },
+  lombok: {
+    Mawun: "kuta-belt",
+    "Tanjung Aan": "kuta-belt",
+    "Merese Hill": "south",
+  },
+  "labuan-bajo": {
+    "Bukit Cinta": "town",
+    "Padar Island": "islands",
+    "Pink Beach": "islands",
+    "Komodo National Park": "islands",
+  },
+  "raja-ampat": {
+    Piaynemo: "piaynemo",
+    Arborek: "arborek",
+  },
+  jakarta: {
+    "Kota Tua": "kota",
+    "Museum Nasional": "center",
+    Monas: "center",
+    Ancol: "ancol",
+  },
+};
+
+/**
+ * Explicit catalog-id → areaId for attractions without a `location` string
+ * (lodging, meals, transfers) so day clustering still works.
+ */
+const attractionIdAreaId: Record<string, string> = {
+  // Danau Toba
+  "toba-transfer-parapat": "parapat",
+  "toba-lunch-harbor": "parapat",
+  "toba-ferry-tuktuk": "tuktuk",
+  "toba-stay-samosir": "tuktuk",
+  "toba-sunset-tuktuk": "tuktuk",
+  "toba-scooter-day": "samosir-east",
+  "toba-ambarita": "samosir-east",
+  "toba-simanindo": "samosir-west",
+  "toba-pangururan": "samosir-west",
+  "toba-warung-dinner": "tuktuk",
+  "toba-holbung": "holbung",
+  "toba-coffee-stop": "tuktuk",
+  "toba-ferry-return": "parapat",
+  "toba-ulos": "tuktuk",
+  "toba-tomok": "samosir-east",
+  // Yogyakarta
+  "yogya-transfer": "city",
+  "yogya-stay": "city",
+  "yogya-gudeg": "city",
+  "yogya-kraton": "city",
+  "yogya-tamansari": "city",
+  "yogya-malioboro": "city",
+  "yogya-boro-transfer": "borobudur",
+  "yogya-borobudur": "borobudur",
+  "yogya-candirejo": "borobudur",
+  "yogya-batik": "city",
+  "yogya-alun": "city",
+  "yogya-prambanan": "prambanan",
+  "yogya-java-kitchen": "city",
+  "yogya-museum": "city",
+  "yogya-checkout": "city",
+  "yogya-ramayana": "prambanan",
+  // Bali
+  "bali-transfer-ubud": "ubud",
+  "bali-stay-ubud": "ubud",
+  "bali-tegallalang": "ubud",
+  "bali-campuhan": "ubud",
+  "bali-ubud-dinner": "ubud",
+  "bali-driver-south": "south",
+  "bali-tirta": "tampaksiring",
+  "bali-jimbaran": "south",
+  "bali-uluwatu": "south",
+  "bali-silver": "ubud",
+  "bali-brunch": "ubud",
+  "bali-echo": "canggu",
+  "bali-airport-return": "south",
+  "bali-spa": "ubud",
+  "bali-surf": "canggu",
+  // Bandung
+  "bdg-train": "city",
+  "bdg-stay": "city",
+  "bdg-sundanese-lunch": "city",
+  "bdg-heritage-walk": "city",
+  "bdg-braga": "city",
+  "bdg-driver": "lembang",
+  "bdg-tangkuban": "lembang",
+  "bdg-ciater": "lembang",
+  "bdg-floating": "lembang",
+  "bdg-tea": "lembang",
+  "bdg-gallery": "city",
+  "bdg-outlet": "city",
+  "bdg-final-meal": "city",
+  "bdg-return": "city",
+  "bdg-kawah-putih": "ciwidey",
+  // Lombok
+  "lombok-transfer": "kuta-belt",
+  "lombok-stay": "kuta-belt",
+  "lombok-mawun": "kuta-belt",
+  "lombok-seafood": "kuta-belt",
+  "lombok-hire": "south",
+  "lombok-sasak": "south",
+  "lombok-aan": "kuta-belt",
+  "lombok-merese": "south",
+  "lombok-boat": "gili",
+  "lombok-snorkel": "gili",
+  "lombok-beach-club": "gili",
+  "lombok-buffer": "kuta-belt",
+  "lombok-pink": "south",
+  // Labuan Bajo
+  "lbj-airport-transfer": "town",
+  "lbj-stay": "town",
+  "lbj-seafood-lunch": "town",
+  "lbj-sunset-cinta": "town",
+  "lbj-warung-dinner": "town",
+  "lbj-day-boat": "islands",
+  "lbj-padar": "islands",
+  "lbj-pink-beach": "islands",
+  "lbj-komodo": "islands",
+  "lbj-boat-lunch": "islands",
+  "lbj-kelor": "islands",
+  "lbj-manta": "islands",
+  "lbj-brunch": "town",
+  "lbj-airport-return": "town",
+  "lbj-spa": "town",
+  // Raja Ampat
+  "raja-sorong-transfer": "base",
+  "raja-homestay": "base",
+  "raja-welcome-lunch": "base",
+  "raja-jetty-sunset": "base",
+  "raja-boat-day": "piaynemo",
+  "raja-piaynemo": "piaynemo",
+  "raja-reef-snorkel": "piaynemo",
+  "raja-boat-lunch": "piaynemo",
+  "raja-arborek": "arborek",
+  "raja-second-reef": "arborek",
+  "raja-kayak": "base",
+  "raja-farewell-meal": "base",
+  "raja-return": "base",
+  "raja-night-dive-demo": "base",
+  // Jakarta
+  "jkt-airport-transfer": "center",
+  "jkt-stay": "center",
+  "jkt-betawi-lunch": "center",
+  "jkt-kota-tua": "kota",
+  "jkt-glodok-dinner": "kota",
+  "jkt-museum": "center",
+  "jkt-monas": "center",
+  "jkt-istiqlal": "center",
+  "jkt-kemang-dinner": "south",
+  "jkt-ride-day": "center",
+  "jkt-macan": "south",
+  "jkt-brunch": "center",
+  "jkt-tioman-shop": "center",
+  "jkt-return": "center",
+  "jkt-ancol": "ancol",
+};
+
+/** Resolve demo areaId from explicit field, location map, or catalog id. */
+export function resolveAttractionAreaId(
+  destinationSlug: string,
+  attraction: Pick<Attraction, "id" | "location" | "areaId">,
+): string | undefined {
+  if (attraction.areaId) return attraction.areaId;
+  if (attraction.location) {
+    const fromLocation =
+      locationToAreaId[destinationSlug]?.[attraction.location];
+    if (fromLocation) return fromLocation;
+  }
+  return attractionIdAreaId[attraction.id];
+}
+
+export function getAdjacentAreas(
+  destinationSlug: string,
+  areaId: string,
+): readonly string[] {
+  return destinationAreaAdjacency[destinationSlug]?.[areaId] ?? [];
+}
+
+export function areAreasAdjacent(
+  destinationSlug: string,
+  a: string | undefined,
+  b: string | undefined,
+): boolean {
+  if (!a || !b || a === b) return false;
+  return getAdjacentAreas(destinationSlug, a).includes(b);
 }
 
 /** Demo attraction catalogs keyed by destination slug (one catalog per place). */
@@ -454,6 +722,7 @@ export const attractionCatalogs: Record<string, Attraction[]> = {
       name: "Tegallalang terrace walk",
       description: "Stepped rice fields with optional swing photo stop.",
       location: "Tegallalang",
+      areaId: "ubud",
       category: "activities",
       durationHours: 2,
       baseCostIdr: 30_000,
@@ -531,6 +800,7 @@ export const attractionCatalogs: Record<string, Attraction[]> = {
       name: "Uluwatu temple & kecak sunset",
       description: "Cliffside temple plus evening kecak performance ticket.",
       location: "Uluwatu",
+      areaId: "south",
       category: "activities",
       durationHours: 2.5,
       baseCostIdr: 150_000,
@@ -570,6 +840,7 @@ export const attractionCatalogs: Record<string, Attraction[]> = {
       name: "Optional beach hour at Echo Beach",
       description: "Free coast time if departure allows.",
       location: "Canggu",
+      areaId: "canggu",
       category: "activities",
       durationHours: 2,
       baseCostIdr: 0,
@@ -1555,8 +1826,19 @@ export const attractionCatalogs: Record<string, Attraction[]> = {
   ],
 };
 
+function withResolvedAreaId(
+  slug: string,
+  attraction: Attraction,
+): Attraction {
+  const areaId = resolveAttractionAreaId(slug, attraction);
+  if (!areaId || attraction.areaId === areaId) return attraction;
+  return { ...attraction, areaId };
+}
+
 export function getAttractionCatalog(slug: string): Attraction[] {
-  return attractionCatalogs[slug] ?? [];
+  return (attractionCatalogs[slug] ?? []).map((a) =>
+    withResolvedAreaId(slug, a),
+  );
 }
 
 export function getAttractionById(
@@ -1567,5 +1849,5 @@ export function getAttractionById(
 }
 
 export function hasAttractionCatalog(slug: string): boolean {
-  return getAttractionCatalog(slug).length > 0;
+  return (attractionCatalogs[slug]?.length ?? 0) > 0;
 }
