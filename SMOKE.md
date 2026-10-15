@@ -3,8 +3,9 @@
 Repeatable post-deploy checks. Run against the **production URL** after deploy.
 Mark each item pass/fail. Do not claim production smoke succeeded unless every item was executed against that URL.
 
-**Production URL:** _(fill after deploy)_  
-**Date / tester:** _
+**Production URL:** _(fill after deploy — e.g. `https://mardalani.vercel.app`)_  
+**Date / tester:** _  
+**Prerequisite:** set Vercel Production env `NEXT_PUBLIC_SITE_URL` to that same origin, then redeploy if the var was added after the first deploy.
 
 | # | Check | Pass? |
 |---|---|---|

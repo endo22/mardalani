@@ -79,14 +79,17 @@ npm run test:e2e
 
 This README does **not** claim a live production deploy has been completed.
 
-1. Push the repository to GitHub (do not commit `.env.local` or real API keys).
-2. In [Vercel](https://vercel.com): **Add New Project** → import the repo.
+GitHub: [https://github.com/endo22/mardalani](https://github.com/endo22/mardalani)
+
+1. Ensure `main` is pushed to GitHub (do not commit `.env.local` or real API keys).
+2. In [Vercel](https://vercel.com): **Add New Project** → import `endo22/mardalani`.
 3. Framework preset: **Next.js** (default). Build: `npm run build`. Install: `npm ci` (or Vercel default).
 4. Environment variables (Production):
    - `NEXT_PUBLIC_SITE_URL` = your canonical origin (e.g. `https://mardalani.vercel.app` or custom domain)
    - Optional AI keys only when a real provider is wired (see `.env.example`)
 5. Deploy. Confirm the deployment URL loads `/`.
-6. Run the production smoke checklist in [`SMOKE.md`](./SMOKE.md) against that URL.
+6. If you set `NEXT_PUBLIC_SITE_URL` after the first deploy, redeploy so SEO absolute URLs pick it up.
+7. Run the production smoke checklist in [`SMOKE.md`](./SMOKE.md) against that URL.
 
 CLI alternative (requires Vercel login):
 
