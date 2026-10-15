@@ -1,0 +1,141 @@
+"use client";
+
+import { DestinationCard } from "@/components/destinations/destination-card";
+import { buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
+import { destinations, getDestinationBySlug } from "@/data/destinations";
+import { useIsClient } from "@/lib/use-is-client";
+import {
+  getServerWishlistSnapshot,
+  getWishlistSnapshot,
+  removeFromWishlist,
+  subscribeWishlist,
+  wishlistErrorMessage,
+} from "@/lib/wishlist-storage";
+import { cn } from "@/lib/utils";
+import Link from "next/link";
+import { useMemo, useState, useSyncExternalStore } from "react";
+
+export function WishlistWorkspace() {
+  const slugs = useSyncExternalStore(
+    subscribeWishlist,
+    getWishlistSnapshot,
+    getServerWishlistSnapshot,
+  );
+  const hydrated = useIsClient();
+  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const items = useMemo(() => {
+    return slugs
+      .map((slug) => getDestinationBySlug(slug))
+      .filter((d): d is NonNullable<typeof d> => Boolean(d));
+  }, [slugs]);
+
+  function onRemove(slug: string) {
+    const result = removeFromWishlist(slug);
+    if (!result.ok) {
+      setFeedback(null);
+      setError(wishlistErrorMessage(result.reason));
+      return;
+    }
+    setError(null);
+    setFeedback("Removed from wishlist.");
+  }
+
+  return (
+    <div className="container-page py-10 md:py-14" data-testid="wishlist-page">
+      <p className="text-caption font-semibold uppercase tracking-[0.18em] text-deep-green">
+        Atlas
+      </p>
+      <h1 className="mt-2 text-h1">Wishlist</h1>
+      <p className="mt-3 max-w-2xl text-muted">
+        Destinations you save stay in this browser only — no cloud sync. We
+        store destination ids, not copies of the catalog.
+      </p>
+
+      {feedback ? (
+        <p
+          className="mt-4 rounded-[var(--radius-md)] bg-forest/8 px-4 py-3 text-body-sm text-forest"
+          role="status"
+          data-testid="wishlist-feedback"
+        >
+          {feedback}
+        </p>
+      ) : null}
+      {error ? (
+        <p
+          className="mt-4 rounded-[var(--radius-md)] bg-danger/10 px-4 py-3 text-body-sm text-danger"
+          role="alert"
+          data-testid="wishlist-error"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      {!hydrated ? (
+        <p className="mt-10 text-muted" data-testid="wishlist-loading">
+          Loading wishlist…
+        </p>
+      ) : null}
+
+      {hydrated && items.length === 0 ? (
+        <div
+          className="mt-12 max-w-lg text-center sm:text-left"
+          data-testid="wishlist-empty"
+        >
+          <h2 className="text-h2">No destinations saved</h2>
+          <p className="mt-3 text-muted">
+            Browse the atlas and add routes you want to revisit. Unavailable
+            destinations are removed automatically.
+          </p>
+          <Link
+            href="/destinations"
+            className={cn(
+              buttonVariants({ variant: "primary", size: "lg" }),
+              "mt-8",
+            )}
+            data-testid="wishlist-empty-cta"
+          >
+            Browse destinations
+          </Link>
+        </div>
+      ) : null}
+
+      {hydrated && items.length > 0 ? (
+        <ul
+          className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3"
+          data-testid="wishlist-list"
+        >
+          {items.map((destination) => (
+            <li key={destination.slug} data-testid={`wishlist-item-${destination.slug}`}>
+              <div className="flex h-full flex-col gap-3">
+                <DestinationCard
+                  destination={destination}
+                  showWishlist={false}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="self-start"
+                  data-testid={`wishlist-remove-${destination.slug}`}
+                  onClick={() => onRemove(destination.slug)}
+                >
+                  Remove from wishlist
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {hydrated ? (
+        <p className="mt-10 text-caption text-muted">
+          {destinations.length} destinations in the atlas · {items.length} on
+          your wishlist
+        </p>
+      ) : null}
+    </div>
+  );
+}

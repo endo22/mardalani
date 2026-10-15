@@ -1,0 +1,44 @@
+---
+description: MARDALANI stack, architecture, Smart Itinerary, budget, and sessionStorage conventions
+alwaysApply: true
+---
+
+# MARDALANI core
+
+## Stack (pin to package.json)
+
+- Next.js `16.4` App Router · React `19.3` · TypeScript · Tailwind `4` · Zod `4` · Motion `14` · lucide-react
+- Forms: react-hook-form + `@hookform/resolvers`
+- Tests: Playwright `^1.64` (`test:e2e`) · unit `tsx --test` on `src/lib/budget.test.ts`
+- Read `node_modules/next/dist/docs/` before new Next APIs (this Next differs from older training data)
+
+## Architecture — extend, don't rewrite
+
+```
+src/app/          routes: / · /plan · /itinerary · /trips · /wishlist · /destinations · /destinations/[slug]
+src/components/   landing · planner · itinerary · trips · wishlist · destinations · layout · ui · motion
+src/data/         destinations.ts · attractions.ts · templates.ts (static catalog only)
+src/lib/          budget.ts · storage.ts · trips-storage.ts · wishlist-storage.ts · itinerary-service.ts · schemas.ts · format.ts
+src/types/        shared domain types
+```
+
+- **MVP:** no DB, auth, paid AI, or live booking APIs. Static TS data + client local/session storage only.
+- Brand name **MARDALANI** only (never LALAN / TripKita). Costs/times = **demo estimates** in UI copy.
+- Generator uses **catalog attractions only** (`attractionsCatalogs[slug]`); template activity names must match catalog names. See `DATA.md` when adding destinations.
+
+## Smart Itinerary / budget (single source of truth)
+
+- All money math lives in `src/lib/budget.ts` (`recalculateBudget`, `scaleDemoCost`, `manualExpenseTripCost`).
+- Generation: extend `src/lib/itinerary-service.ts` — do not fork a second generator.
+- `Activity.costIdr` = trip contribution (scaled once at create/add). `ManualExpense.amountIdr` = base; scale only via `manualExpenseTripCost`.
+- ❌ Re-multiply activity costs by travelers inside `recalculateBudget`
+- ✅ Call `recalculateBudget(days, budgetCap, { manualExpenses, travelers })` after day/expense edits
+
+## Client persistence
+
+- **Active trip** — `sessionStorage` key `mardalani_itinerary_v1` via `src/lib/storage.ts`. SSR-safe: stable `SERVER_SNAPSHOT` (`null` same ref). Subscribe via `useSyncExternalStore(subscribeItinerary, getItinerarySnapshot, getServerItinerarySnapshot)`.
+- **Saved trips library** — `localStorage` key `mardalani_saved_trips_v1` via `src/lib/trips-storage.ts` (versioned Zod store). `saveItinerary` upserts by itinerary id; open via `activateSavedTrip`.
+- **Wishlist** — `localStorage` key `mardalani_wishlist_v1` via `src/lib/wishlist-storage.ts` (destination slugs only).
+- Cache by raw string; notify listeners **once** per real write — no double-emit.
+- ❌ Direct `sessionStorage`/`localStorage` / ad-hoc keys / parse in components
+- ✅ `saveItinerary` / `loadItinerary` / `clearItinerary` / trips + wishlist helpers + Zod schemas

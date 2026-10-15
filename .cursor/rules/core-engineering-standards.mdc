@@ -1,0 +1,49 @@
+---
+description: Core engineering standards — security, maintainability, quality, and regression prevention
+alwaysApply: true
+---
+
+# Core Engineering Standards
+
+Standar profesional frontend/full-stack. Melengkapi `mardalani-core` & `mardalani-qa` — jangan menggantikannya.
+
+## Sebelum mengubah kode
+
+- Analisis struktur proyek & pola yang sudah ada; ikuti arsitektur, konvensi, dan implementasi yang ada.
+- Jangan invent field DB, endpoint, API, atau requirement yang belum ada di repo/brief.
+- Cek Git diff sebelum selesai; hindari perubahan di luar scope.
+
+```
+# ❌ BAD — rewrite modul, tambah API baru "karena lebih bagus"
+# ✅ GOOD — extend file/pola yang ada; perubahan sempit & relevan
+```
+
+## Kualitas & desain kode
+
+- Clean code, separation of concerns, SOLID secara proporsional.
+- Hindari overengineering, duplikasi, dan refactor yang tidak perlu.
+- Jaga backward compatibility & kontrak API yang sudah ada.
+
+## Keamanan
+
+- Validasi input, authn/authz, dan secure coding di sisi yang tepat (client vs server).
+- Jangan hardcode secrets; jangan leak data sensitif di log, UI, atau respons.
+
+```
+# ❌ BAD — API key di source / console.log(user.token)
+# ✅ GOOD — env/secret store; log tanpa PII/kredensial
+```
+
+## Verifikasi & regresi
+
+- Tambah/update tes untuk perubahan penting.
+- Jalankan build, lint, typecheck, dan tes yang tersedia untuk area yang disentuh.
+- Jangan klaim check lulus jika belum dijalankan.
+
+## Operasi berisiko
+
+- Minta approval sebelum destructive ops, perubahan DB berisiko, atau deployment.
+
+## Laporan akhir
+
+Sertakan: file yang berubah · hasil verifikasi (lulus/gagal/tidak dijalankan) · risiko yang belum selesai.

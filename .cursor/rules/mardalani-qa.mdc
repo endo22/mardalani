@@ -1,0 +1,38 @@
+---
+description: MARDALANI QA gates, Playwright regression, and design-system anti-rewrite rules
+alwaysApply: true
+---
+
+# MARDALANI QA & design
+
+## After substantive changes
+
+1. Preserve and extend `e2e/mardalani-qa.spec.ts` (flows, `data-testid`, overflow checks). Don't delete coverage to "make green".
+2. Run unit budget tests when touching costs: `npm run test:unit`
+3. Run lint + build before handoff: `npm run lint` && `npm run build`
+4. For itinerary/budget/storage/generator changes, also run `npm run test:e2e` when feasible
+
+```
+# ❌ BAD — ship UI-only and skip gates
+# ✅ GOOD — lint + build; e2e if plan/itinerary/budget/storage touched
+```
+
+## Design system — extend, don't restyle
+
+- Source of truth: `DESIGN_SYSTEM.md`. Update it in the same change set if tokens/components/motion change.
+- Tokens: forest `#173D35` · deep `#244C42` · cream `#F7F4EC` · gold `#C9A96E` · charcoal `#252A27` · muted `#5C665F`
+- Type: Fraunces (display) + Plus Jakarta Sans (body/UI). Motion: `motion` package only (no GSAP).
+- Landing hero: full-bleed photography + scrim — not 50/50 text/image split. No dark-mode MVP.
+- Product UI: calm cream/white surfaces; gold primary CTA; forest inverse rails; soft elevation (not nested card stacks).
+- Copy: verb-first CTAs; empty/error states explain next action; money labeled as demo estimates.
+
+```
+# ❌ BAD — new purple SaaS theme, Inter defaults, inset hero cards, rewrite DESIGN_SYSTEM.md away
+# ✅ GOOD — reuse Button/tokens/Reveal; match forest/cream/gold; keep MARDALANI masthead DNA
+```
+
+## Anti-scope creep
+
+- Don't introduce DB/auth/payments/AI APIs "while you're here".
+- Don't rename routes or storage key without a migration + e2e update.
+- Prefer surgical edits in existing files over greenfield redesigns.
