@@ -2,7 +2,7 @@
 
 Editorial Journey Atlas — a demo Indonesia travel itinerary planner (MVP).
 
-Plan a trip, generate destination-aware demo itineraries, edit activities, export a PDF, and keep trips/wishlist in the browser. Active editing uses `sessionStorage`; the saved-trips library and wishlist use `localStorage`. Nothing is synced to a server.
+Plan a trip, generate destination-aware demo itineraries, edit activities, export a PDF, and keep trips/wishlist in the browser. Active editing uses `sessionStorage`; the saved-trips library and wishlist use `localStorage`. Optional **local JSON export/import** on My Trips / Wishlist is a device file backup — nothing is synced to a server.
 
 ## Stack
 
@@ -115,6 +115,21 @@ Catalog schema, how to add a destination, and source/limitation notes live in [`
 - No geographic optimization between stops
 - PDF export is client-side demo output, not a booking document
 - Third-party Unsplash images and Google Fonts (via `next/font`) require network access at build/runtime
+
+## Locked architecture (Decision A — local-only)
+
+Product owner lock for Phase 9+ planning. Do **not** re-litigate unless explicitly reopened:
+
+- Stay on **Next.js + TypeScript** as in this repo
+- Stay on **Vercel Free** while usage allows
+- Keep **sessionStorage + localStorage** with error handling and **local JSON file backup** (export/import on My Trips / Wishlist) — not cloud sync
+- Keep the **local itinerary generator**; **no paid AI APIs**
+- Preserve automated tests; never delete/weaken coverage only to green the build
+- **No database, authentication, or paid services** in this MVP track
+
+Optional AI keys in `.env.example` remain unused placeholders for a future swap — never commit real secrets.
+
+**Dependency note:** `npm audit --omit=dev` is the production-deps gate. Transitive `braces` under ESLint (`eslint-config-next`) is a **dev-only** tooling path; do not force-upgrade or patch it without a clear ESLint/Next upgrade — document only.
 
 ## Accessibility note
 

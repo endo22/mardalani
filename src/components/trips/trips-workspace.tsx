@@ -5,8 +5,20 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { daysBetween, formatDateRange, formatIdr } from "@/lib/format";
+import {
+  backupFilename,
+  backupInvalidMessage,
+  backupTooLargeMessage,
+  buildTripsBackup,
+  downloadJsonBackup,
+  importTripsBackup,
+  readBackupFile,
+  tripsBackupEmptyMessage,
+  tripsImportSuccessMessage,
+} from "@/lib/local-backup";
 import { activateSavedTrip } from "@/lib/storage";
 import {
+  countTripIdConflicts,
   deleteSavedTrip,
   duplicateSavedTrip,
   getSavedTripsSnapshot,
@@ -15,15 +27,23 @@ import {
   storageErrorMessage,
   subscribeSavedTrips,
   tripDisplayTitle,
+  type DuplicateTripPolicy,
   type StorageWriteResult,
 } from "@/lib/trips-storage";
+import type { LocalBackup } from "@/lib/schemas";
 import { useIsClient } from "@/lib/use-is-client";
 import { cn } from "@/lib/utils";
 import type { Itinerary } from "@/types";
-import { Copy, Pencil, Trash2 } from "lucide-react";
+import { Copy, Download, Pencil, Trash2, Upload } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState, useSyncExternalStore } from "react";
+import {
+  FormEvent,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+} from "react";
 
 export function TripsWorkspace() {
   const router = useRouter();
@@ -38,6 +58,11 @@ export function TripsWorkspace() {
   const [renaming, setRenaming] = useState<Itinerary | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<Itinerary | null>(null);
+  const [pendingImport, setPendingImport] = useState<{
+    backup: LocalBackup;
+    conflicts: number;
+  } | null>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   function reportResult(result: StorageWriteResult, successMessage: string) {
     if (result.ok) {
@@ -82,6 +107,61 @@ export function TripsWorkspace() {
     }
   }
 
+  function onExportBackup() {
+    if (trips.length === 0) {
+      setFeedback(null);
+      setError(tripsBackupEmptyMessage());
+      return;
+    }
+    downloadJsonBackup(buildTripsBackup(trips), backupFilename("trips"));
+    setError(null);
+    setFeedback(
+      "Downloaded a local JSON backup of your trips. This is a file on your device — not cloud sync.",
+    );
+  }
+
+  function applyTripsImport(
+    backup: LocalBackup,
+    onDuplicate: DuplicateTripPolicy,
+  ) {
+    const result = importTripsBackup(backup, { onDuplicate });
+    if (!result.ok) {
+      setFeedback(null);
+      setError(storageErrorMessage(result.reason));
+      return;
+    }
+    setError(null);
+    setFeedback(tripsImportSuccessMessage(result));
+  }
+
+  async function onImportFile(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    const parsed = await readBackupFile(file);
+    if (!parsed.ok) {
+      setFeedback(null);
+      setError(
+        parsed.reason === "too_large"
+          ? backupTooLargeMessage()
+          : backupInvalidMessage(),
+      );
+      return;
+    }
+    if (!parsed.backup.trips?.length) {
+      setFeedback(null);
+      setError(backupInvalidMessage());
+      return;
+    }
+    const conflicts = countTripIdConflicts(parsed.backup.trips);
+    if (conflicts > 0) {
+      setPendingImport({ backup: parsed.backup, conflicts });
+      setError(null);
+      return;
+    }
+    applyTripsImport(parsed.backup, "skip");
+  }
+
   const showEmpty = hydrated && trips.length === 0;
 
   return (
@@ -92,8 +172,54 @@ export function TripsWorkspace() {
       <h1 className="mt-2 text-h1">My Trips</h1>
       <p className="mt-3 max-w-2xl text-muted">
         Saved demo itineraries stay in this browser only — not synced across
-        devices. Clearing site data can remove them permanently.
+        devices. Clearing site data can remove them permanently. Use a local
+        JSON backup below if you want a file copy on this device.
       </p>
+
+      {hydrated ? (
+        <div
+          className="mt-6 flex flex-col gap-3 rounded-[var(--radius-lg)] bg-white p-4 shadow-[var(--shadow-soft)] sm:flex-row sm:flex-wrap sm:items-center sm:justify-between"
+          data-testid="trips-backup"
+        >
+          <p className="max-w-xl text-body-sm text-muted">
+            Local file backup only — export or restore JSON on this device. Not
+            cloud sync.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-h-11"
+              data-testid="trips-backup-export"
+              onClick={onExportBackup}
+            >
+              <Download className="mr-1.5 h-4 w-4" aria-hidden />
+              Export JSON
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="min-h-11"
+              data-testid="trips-backup-import"
+              onClick={() => importInputRef.current?.click()}
+            >
+              <Upload className="mr-1.5 h-4 w-4" aria-hidden />
+              Import JSON
+            </Button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="sr-only"
+              data-testid="trips-backup-file"
+              aria-label="Import trips JSON backup"
+              onChange={onImportFile}
+            />
+          </div>
+        </div>
+      ) : null}
 
       {feedback ? (
         <p
@@ -313,6 +439,54 @@ export function TripsWorkspace() {
             type="button"
             variant="outline"
             onClick={() => setDeleting(null)}
+          >
+            Cancel
+          </Button>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(pendingImport)}
+        onClose={() => setPendingImport(null)}
+        title="Replace existing trips?"
+        description={
+          pendingImport
+            ? `${pendingImport.conflicts} trip${pendingImport.conflicts === 1 ? "" : "s"} in this file already exist in your library. Choose whether to keep yours or replace them.`
+            : undefined
+        }
+      >
+        <div className="mt-2 flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="primary"
+            data-testid="trips-import-skip-duplicates"
+            onClick={() => {
+              if (!pendingImport) return;
+              const backup = pendingImport.backup;
+              setPendingImport(null);
+              applyTripsImport(backup, "skip");
+            }}
+          >
+            Keep existing
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            data-testid="trips-import-replace-duplicates"
+            onClick={() => {
+              if (!pendingImport) return;
+              const backup = pendingImport.backup;
+              setPendingImport(null);
+              applyTripsImport(backup, "replace");
+            }}
+          >
+            Replace existing
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            data-testid="trips-import-cancel"
+            onClick={() => setPendingImport(null)}
           >
             Cancel
           </Button>

@@ -168,6 +168,73 @@ export function toggleWishlist(slug: string): WishlistWriteResult & {
   return result.ok ? { ok: true, added: true } : result;
 }
 
+/**
+ * Union imported destination slugs into the wishlist (invalid catalog refs dropped).
+ * `imported` counts only slugs that were not already present.
+ */
+export function mergeImportedWishlist(
+  incoming: string[],
+): WishlistWriteResult & {
+  imported: number;
+  skipped: number;
+  duplicatesSkipped: number;
+} {
+  let skipped = 0;
+  const cleanedIncoming: string[] = [];
+  const seen = new Set<string>();
+
+  for (const slug of incoming) {
+    if (typeof slug !== "string" || !slug.trim()) {
+      skipped += 1;
+      continue;
+    }
+    const trimmed = slug.trim();
+    if (!getDestinationBySlug(trimmed)) {
+      skipped += 1;
+      continue;
+    }
+    if (seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    cleanedIncoming.push(trimmed);
+  }
+
+  if (cleanedIncoming.length === 0) {
+    return {
+      ok: false,
+      reason: "invalid",
+      imported: 0,
+      skipped,
+      duplicatesSkipped: 0,
+    };
+  }
+
+  const current = listWishlistSlugs();
+  const currentSet = new Set(current);
+  const newlyAdded = cleanedIncoming.filter((s) => !currentSet.has(s));
+  const duplicatesSkipped = cleanedIncoming.length - newlyAdded.length;
+
+  if (newlyAdded.length === 0) {
+    return {
+      ok: true,
+      imported: 0,
+      skipped,
+      duplicatesSkipped,
+    };
+  }
+
+  const merged = [...newlyAdded, ...current];
+  const result = writeStore(merged);
+  if (!result.ok) {
+    return { ...result, imported: 0, skipped, duplicatesSkipped };
+  }
+  return {
+    ok: true,
+    imported: newlyAdded.length,
+    skipped,
+    duplicatesSkipped,
+  };
+}
+
 export function subscribeWishlist(onStoreChange: Listener): () => void {
   listeners.add(onStoreChange);
   if (typeof window !== "undefined") {

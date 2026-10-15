@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:unit": "npx --yes tsx --test src/lib/budget.test.ts",
+    "test:unit": "npx --yes tsx --test src/lib/budget.test.ts src/lib/local-backup.test.ts",
     "test:e2e": "playwright test"
   },
   "dependencies": {

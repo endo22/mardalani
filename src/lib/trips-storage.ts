@@ -240,6 +240,174 @@ export function deleteSavedTrip(id: string): StorageWriteResult {
   return writeStore(current.filter((t) => t.id !== id));
 }
 
+export type DuplicateTripPolicy = "skip" | "replace";
+
+export type TripMergeCounts = {
+  imported: number;
+  skipped: number;
+  duplicatesSkipped: number;
+  replaced: number;
+};
+
+/**
+ * Pure merge planner: never wipes `current` on empty/invalid import.
+ * Default `onDuplicate: "skip"` keeps existing trips with the same id.
+ */
+export function planTripMerge(
+  current: Itinerary[],
+  incoming: Itinerary[],
+  options: { onDuplicate?: DuplicateTripPolicy } = {},
+): { ok: true; trips: Itinerary[] } & TripMergeCounts {
+  const onDuplicate = options.onDuplicate ?? "skip";
+  const uniqueImported: Itinerary[] = [];
+  const seen = new Set<string>();
+  let skipped = 0;
+
+  for (const item of incoming) {
+    const parsed = itinerarySchema.safeParse(item);
+    if (!parsed.success) {
+      skipped += 1;
+      continue;
+    }
+    const next = normalizeItinerary(parsed.data);
+    if (seen.has(next.id)) {
+      // Last duplicate within the import file wins
+      const idx = uniqueImported.findIndex((t) => t.id === next.id);
+      if (idx !== -1) uniqueImported[idx] = next;
+      continue;
+    }
+    seen.add(next.id);
+    uniqueImported.push(next);
+  }
+
+  if (uniqueImported.length === 0) {
+    return {
+      ok: true,
+      trips: current,
+      imported: 0,
+      skipped,
+      duplicatesSkipped: 0,
+      replaced: 0,
+    };
+  }
+
+  const currentById = new Map(current.map((t) => [t.id, t]));
+  let imported = 0;
+  let duplicatesSkipped = 0;
+  let replaced = 0;
+
+  const incomingById = new Map(uniqueImported.map((t) => [t.id, t]));
+  const newTrips: Itinerary[] = [];
+
+  for (const trip of uniqueImported) {
+    if (currentById.has(trip.id)) {
+      if (onDuplicate === "replace") {
+        replaced += 1;
+      } else {
+        duplicatesSkipped += 1;
+      }
+    } else {
+      newTrips.push(trip);
+      imported += 1;
+    }
+  }
+
+  const merged: Itinerary[] = [
+    ...newTrips,
+    ...current.map((trip) => {
+      if (onDuplicate === "replace" && incomingById.has(trip.id)) {
+        return incomingById.get(trip.id)!;
+      }
+      return trip;
+    }),
+  ];
+
+  return {
+    ok: true,
+    trips: merged,
+    imported,
+    skipped,
+    duplicatesSkipped,
+    replaced,
+  };
+}
+
+/** How many distinct incoming trip ids already exist in the library. */
+export function countTripIdConflicts(
+  incoming: Itinerary[],
+  current: Itinerary[] = listSavedTrips(),
+): number {
+  const currentIds = new Set(current.map((t) => t.id));
+  const seen = new Set<string>();
+  let conflicts = 0;
+  for (const item of incoming) {
+    const id = typeof item?.id === "string" ? item.id : null;
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    if (currentIds.has(id)) conflicts += 1;
+  }
+  return conflicts;
+}
+
+/**
+ * Merge imported itineraries into the library.
+ * Default skips same-id trips; pass `onDuplicate: "replace"` to overwrite.
+ * Invalid entries are skipped; failed writes leave existing data untouched.
+ */
+export function mergeImportedTrips(
+  incoming: Itinerary[],
+  options: { onDuplicate?: DuplicateTripPolicy } = {},
+): StorageWriteResult & TripMergeCounts {
+  const current = listSavedTrips();
+  const planned = planTripMerge(current, incoming, options);
+
+  if (
+    planned.imported === 0 &&
+    planned.replaced === 0 &&
+    planned.duplicatesSkipped === 0 &&
+    planned.skipped > 0
+  ) {
+    // Only invalid entries — do not wipe the library.
+    return {
+      ok: false,
+      reason: "invalid",
+      imported: 0,
+      skipped: planned.skipped,
+      duplicatesSkipped: 0,
+      replaced: 0,
+    };
+  }
+
+  if (planned.imported === 0 && planned.replaced === 0) {
+    // Nothing to write (all duplicates skipped, or empty after dedupe).
+    return {
+      ok: true,
+      imported: 0,
+      skipped: planned.skipped,
+      duplicatesSkipped: planned.duplicatesSkipped,
+      replaced: 0,
+    };
+  }
+
+  const result = writeStore(planned.trips);
+  if (!result.ok) {
+    return {
+      ...result,
+      imported: 0,
+      skipped: planned.skipped,
+      duplicatesSkipped: planned.duplicatesSkipped,
+      replaced: 0,
+    };
+  }
+  return {
+    ok: true,
+    imported: planned.imported,
+    skipped: planned.skipped,
+    duplicatesSkipped: planned.duplicatesSkipped,
+    replaced: planned.replaced,
+  };
+}
+
 export function subscribeSavedTrips(onStoreChange: Listener): () => void {
   listeners.add(onStoreChange);
   if (typeof window !== "undefined") {

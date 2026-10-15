@@ -195,3 +195,16 @@ export const wishlistStoreSchema = z.object({
 });
 
 export type WishlistStore = z.infer<typeof wishlistStoreSchema>;
+
+/** Portable local-file backup envelope (not cloud sync). */
+export const LOCAL_BACKUP_KIND = "mardalani-local-backup" as const;
+
+export const localBackupSchema = z.object({
+  kind: z.literal(LOCAL_BACKUP_KIND),
+  version: z.literal(1),
+  exportedAt: z.string().min(1),
+  trips: z.array(itinerarySchema).optional(),
+  wishlistSlugs: z.array(z.string().min(1).max(80)).optional(),
+});
+
+export type LocalBackup = z.infer<typeof localBackupSchema>;

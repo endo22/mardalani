@@ -1,4 +1,5 @@
 import { expect, type Download, type Page, test } from "@playwright/test";
+import fs from "node:fs/promises";
 import { PDFParse } from "pdf-parse";
 
 const STORAGE_KEY = "mardalani_itinerary_v1";
@@ -1629,5 +1630,198 @@ test.describe("MARDALANI browser QA", () => {
     await expect(
       page.getByRole("heading", { name: "Phase8 Overlap B" }),
     ).toBeVisible();
+  });
+
+  test("38. Local JSON backup export/import for trips and wishlist", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.evaluate(
+      ([active, trips, wish]) => {
+        sessionStorage.removeItem(active);
+        localStorage.removeItem(trips);
+        localStorage.removeItem(wish);
+      },
+      [STORAGE_KEY, SAVED_TRIPS_KEY, WISHLIST_KEY],
+    );
+
+    await generatePlan(page, {
+      destination: "bali",
+      startDate: "2036-07-01",
+      endDate: "2036-07-03",
+      travelers: "2",
+    });
+
+    await page.goto("/trips");
+    await expect(page.getByTestId("trips-backup")).toBeVisible();
+    await expect(page.getByText(/Local file backup only/i).first()).toBeVisible();
+
+    const tripDownloadPromise = page.waitForEvent("download");
+    await page.getByTestId("trips-backup-export").click();
+    const tripDownload = await tripDownloadPromise;
+    expect(tripDownload.suggestedFilename()).toMatch(/mardalani-trips-.*\.json/);
+    const tripPath = await tripDownload.path();
+    expect(tripPath).toBeTruthy();
+    await expect(page.getByTestId("trips-feedback")).toContainText(
+      /local JSON backup|not cloud sync/i,
+    );
+
+    // Clear library + active session so Phase-5 session→library migration
+    // cannot reseed before import.
+    await page.evaluate(
+      ([active, trips, wish]) => {
+        sessionStorage.removeItem(active);
+        localStorage.removeItem(trips);
+        localStorage.removeItem(wish);
+      },
+      [STORAGE_KEY, SAVED_TRIPS_KEY, WISHLIST_KEY],
+    );
+    await page.reload();
+    await expect(page.getByTestId("trips-empty")).toBeVisible();
+
+    await page.getByTestId("trips-backup-file").setInputFiles(tripPath!);
+    await expect(page.getByTestId("trips-feedback")).toContainText(/Restored/i);
+    await expect(page.getByTestId("trips-list")).toBeVisible();
+    await expect(
+      page.locator("[data-testid^=trip-card-]").filter({ hasText: "Bali" }),
+    ).toBeVisible();
+
+    await page.goto("/destinations");
+    await page.getByTestId("wishlist-toggle-bandung").click();
+    await page.goto("/wishlist");
+    await expect(page.getByTestId("wishlist-item-bandung")).toBeVisible();
+    await expect(page.getByTestId("wishlist-backup")).toBeVisible();
+
+    const wishDownloadPromise = page.waitForEvent("download");
+    await page.getByTestId("wishlist-backup-export").click();
+    const wishDownload = await wishDownloadPromise;
+    expect(wishDownload.suggestedFilename()).toMatch(
+      /mardalani-wishlist-.*\.json/,
+    );
+    const wishPath = await wishDownload.path();
+    expect(wishPath).toBeTruthy();
+
+    await page.evaluate((wish) => localStorage.removeItem(wish), WISHLIST_KEY);
+    await page.reload();
+    await expect(page.getByTestId("wishlist-empty")).toBeVisible();
+
+    await page.getByTestId("wishlist-backup-file").setInputFiles(wishPath!);
+    await expect(page.getByTestId("wishlist-feedback")).toContainText(
+      /Restored/i,
+    );
+    await expect(page.getByTestId("wishlist-item-bandung")).toBeVisible();
+  });
+
+  test("39. Local backup rejects bad/oversized imports without wiping trips", async ({
+    page,
+  }, testInfo) => {
+    await page.goto("/");
+    await page.evaluate(
+      ([active, trips, wish]) => {
+        sessionStorage.removeItem(active);
+        localStorage.removeItem(trips);
+        localStorage.removeItem(wish);
+      },
+      [STORAGE_KEY, SAVED_TRIPS_KEY, WISHLIST_KEY],
+    );
+
+    await generatePlan(page, {
+      destination: "yogyakarta",
+      startDate: "2036-08-01",
+      endDate: "2036-08-03",
+      travelers: "2",
+    });
+
+    await page.goto("/trips");
+    await expect(page.getByTestId("trips-list")).toBeVisible();
+    await expect(
+      page.locator("[data-testid^=trip-card-]").filter({ hasText: "Yogyakarta" }),
+    ).toBeVisible();
+
+    const seededTitle = await page
+      .locator("[data-testid^=trip-card-] h2")
+      .first()
+      .innerText();
+
+    // Malformed JSON must not wipe the library
+    const malformedPath = testInfo.outputPath("backup-malformed.json");
+    await fs.writeFile(malformedPath, "{not-valid-json", "utf8");
+    await page.getByTestId("trips-backup-file").setInputFiles(malformedPath);
+    await expect(page.getByTestId("trips-error")).toContainText(
+      /not a valid MARDALANI local backup/i,
+    );
+    await expect(
+      page.locator("[data-testid^=trip-card-]").filter({ hasText: seededTitle }),
+    ).toBeVisible();
+
+    // Wrong kind: wishlist-only file on trips page
+    const wishOnlyPath = testInfo.outputPath("backup-wishlist-only.json");
+    await fs.writeFile(
+      wishOnlyPath,
+      JSON.stringify({
+        kind: "mardalani-local-backup",
+        version: 1,
+        exportedAt: "2036-08-01T00:00:00.000Z",
+        wishlistSlugs: ["bali"],
+      }),
+      "utf8",
+    );
+    await page.getByTestId("trips-backup-file").setInputFiles(wishOnlyPath);
+    await expect(page.getByTestId("trips-error")).toContainText(
+      /not a valid MARDALANI local backup/i,
+    );
+    await expect(
+      page.locator("[data-testid^=trip-card-]").filter({ hasText: seededTitle }),
+    ).toBeVisible();
+
+    // Oversized file (>5 MB) rejected with clear error; library intact
+    const oversizedPath = testInfo.outputPath("backup-oversized.json");
+    const oversized = Buffer.alloc(5 * 1024 * 1024 + 64, 0x61);
+    await fs.writeFile(oversizedPath, oversized);
+    await page.getByTestId("trips-backup-file").setInputFiles(oversizedPath);
+    await expect(page.getByTestId("trips-error")).toContainText(/too large/i);
+    await expect(
+      page.locator("[data-testid^=trip-card-]").filter({ hasText: seededTitle }),
+    ).toBeVisible();
+
+    // Duplicate id: keep existing by default (confirm dialog)
+    const tripId = (await page
+      .locator("[data-testid^=trip-card-]")
+      .first()
+      .getAttribute("data-testid"))!.replace("trip-card-", "");
+    const rawLibrary = await page.evaluate(
+      (key) => localStorage.getItem(key),
+      SAVED_TRIPS_KEY,
+    );
+    expect(rawLibrary).toBeTruthy();
+    const store = JSON.parse(rawLibrary!) as {
+      version: 1;
+      trips: Array<Record<string, unknown>>;
+    };
+    const clone = structuredClone(store.trips[0]!);
+    clone.title = "Should Not Replace";
+    const dupPath = testInfo.outputPath("backup-duplicate-id.json");
+    await fs.writeFile(
+      dupPath,
+      JSON.stringify({
+        kind: "mardalani-local-backup",
+        version: 1,
+        exportedAt: "2036-08-01T00:00:00.000Z",
+        trips: [clone],
+      }),
+      "utf8",
+    );
+    await page.getByTestId("trips-backup-file").setInputFiles(dupPath);
+    await expect(
+      page.getByRole("heading", { name: /Replace existing trips/i }),
+    ).toBeVisible();
+    await page.getByTestId("trips-import-skip-duplicates").click();
+    await expect(page.getByTestId("trips-feedback")).toContainText(
+      /Kept .+ existing trip/i,
+    );
+    await expect(page.getByTestId(`trip-card-${tripId}`)).toBeVisible();
+    await expect(
+      page.getByTestId(`trip-card-${tripId}`).getByRole("heading"),
+    ).not.toContainText("Should Not Replace");
   });
 });
